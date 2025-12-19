@@ -3,25 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Quest 3 MR - 粒子消散 (修复版)</title>
+    <title>Quest 3 AR - 调试救援版</title>
     <style>
-        /* 背景设为黑色，在AR模式下 WebXR 会负责把它变成透明 */
         body { margin: 0; overflow: hidden; background-color: #000; font-family: sans-serif; }
         #info {
-            position: absolute;
-            top: 20px; width: 100%;
-            text-align: center; color: white;
-            pointer-events: none; z-index: 100;
-            text-shadow: 0 0 5px #000;
+            position: absolute; top: 20px; width: 100%;
+            text-align: center; color: yellow; pointer-events: none; z-index: 100;
+            text-shadow: 2px 2px 2px #000; font-size: 1.2rem;
         }
-        .highlight { color: #00ff88; font-weight: bold; }
     </style>
 </head>
 <body>
 
     <div id="info">
-        Quest 3 MR 模式 (修复版)<br>
-        <span id="status" style="font-size: 0.8em; color: #ccc;">正在加载资源... (如果卡住请检查图片链接)</span>
+        AR 调试版<br>
+        <span id="status" style="color:white; font-size:0.8rem">找不到画面？请扣一下右手扳机！</span>
     </div>
 
     <script type="importmap">
@@ -35,287 +31,269 @@
 
     <script type="module">
         import * as THREE from 'three';
-        // 【修改点 1】引入 ARButton 而不是 VRButton
         import { ARButton } from 'three/addons/webxr/ARButton.js';
-        
-        // import { VRButton } from 'three/addons/webxr/VRButton.js'; // 原来的删掉
-        import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
-        import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 
-        // --- 配置 ---
-        // ⚠️ 注意：你提供的 Catbox 链接已经失效了，会导致加载卡住。
-        // 为了演示，我这里替换成了临时的测试图片。请务必替换回你自己的有效 HTTPS 图片链接。
+        // --- 🔧 配置区 ---
         const CONFIG = {
-            // renImage: 'https://files.catbox.moe/mug12k.png', // 原链接已失效
-            // yiImage: 'https://files.catbox.moe/lwiorc.png',  // 原链接已失效
-            renImage: 'https://picsum.photos/id/237/400/600', // 测试背景图
-            yiImage: 'https://picsum.photos/id/104/400/600',   // 测试粒子图
+            // 请在这里换上你自己的图！如果链接坏了，系统会自动用纯色块代替
+            renImage: 'https://picsum.photos/id/237/400/600', 
+            yiImage: 'https://picsum.photos/id/104/400/600',   
             
-            particleSize: 3.0,   // 稍微调小一点，防止过于密集
-            threshold: 4,        // 采样密度 (越大粒子越少，性能越好)
+            particleSize: 3.0,
+            threshold: 4, 
             dissolveSpeed: 0.03,
             recoverSpeed: 0.05
         };
 
         let scene, camera, renderer;
-        let yiParticles, renMesh, groupContainer;
+        let groupContainer, yiParticles, debugBox;
         let handRight, handLeft;
         let dissolveProgress = 0;
         let isHandOpen = false;
-        
+        let controllerRight; // 右手控制器
+
         const statusText = document.getElementById('status');
 
         init();
 
         function init() {
-            // 1. 场景设置
+            // 1. 场景
             scene = new THREE.Scene();
-            // 关键：绝对不要设置 scene.background，让 AR 相机透过来！
-            
-            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
-            camera.position.set(0, 1.6, 2); // PC调试位置
 
-            // 2. 渲染器设置 (关键：alpha: true 和 antialias: true)
+            // 2. 相机
+            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 1.6, 2);
+
+            // 3. 渲染器
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.xr.enabled = true; // 开启 XR
+            renderer.xr.enabled = true;
             document.body.appendChild(renderer.domElement);
 
-            // 3. 【修改点 2】添加 AR 按钮 (替代原来的 VRButton)
-            // ARButton 会自动请求 'immersive-ar' 会话，这是透视的前提
+            // 4. AR 按钮
             const button = ARButton.createButton(renderer, { 
-                requiredFeatures: ['hit-test'], // AR 必备
-                optionalFeatures: ['hand-tracking', 'dom-overlay'], // 请求手势追踪和 UI 覆盖
-                domOverlay: { root: document.body } // 让网页 UI 显示在 AR 之上
+                requiredFeatures: ['hit-test'], 
+                optionalFeatures: ['hand-tracking', 'dom-overlay'],
+                domOverlay: { root: document.body }
             });
-            // ARButton 默认文字通常就是 "START AR"，如果你想改中文也可以：
-            // button.textContent = '进入 AR 模式'; 
             document.body.appendChild(button);
-            
-            // 监听进入会话
-            renderer.xr.addEventListener('sessionstart', () => {
-                statusText.innerText = "成功进入 AR。请在面前张开手掌。";
-                // 进入 AR 后，调整一下全息图的位置到面前
-                if(groupContainer) {
-                     groupContainer.position.set(0, 1.5, -0.5); // 高度1.5m, 前方0.5m
-                     groupContainer.scale.set(0.002, 0.002, 0.002);
-                }
-            });
 
-            // 4. 设置手势追踪
+            // 5. 控制器 (用于“召唤”功能)
+            controllerRight = renderer.xr.getController(0);
+            controllerRight.addEventListener('select', teleportToObject); // 扣扳机触发
+            scene.add(controllerRight);
+
             setupHands();
 
-            // 5. 加载资源并创建全息投影
-            loadResources();
+            // 6. 添加一个“红色信标” (Debug Box)
+            // 无论图片是否加载，这个红盒子都必须出现！
+            createDebugContent();
+
+            // 7. 加载资源 (带容错保护)
+            loadResourcesSafe();
 
             window.addEventListener('resize', onWindowResize);
-            
-            // 启动动画循环
             renderer.setAnimationLoop(render);
         }
 
-        function setupHands() {
-            handRight = renderer.xr.getHand(0); 
-            scene.add(handRight);
-            handLeft = renderer.xr.getHand(1);
-            scene.add(handLeft);
+        // --- 🚀 核心功能：召唤术 ---
+        function teleportToObject() {
+            if (!groupContainer) return;
+            
+            // 把物体瞬间移动到你眼前 0.5 米处
+            // 获取头部位置
+            const playerPos = new THREE.Vector3();
+            const playerDir = new THREE.Vector3();
+            camera.getWorldPosition(playerPos);
+            camera.getWorldDirection(playerDir);
+
+            // 计算目标位置：头的位置 + 前方 0.5米
+            // 注意：在 AR 模式下，y 轴可能需要微调，这里直接设在眼前
+            playerDir.multiplyScalar(0.5);
+            const targetPos = playerPos.add(playerDir);
+            
+            // 稍微降低一点高度，让你俯视它
+            targetPos.y -= 0.1; 
+
+            groupContainer.position.copy(targetPos);
+            groupContainer.lookAt(camera.position); // 让画对着你
+            
+            statusText.innerText = "已召唤全息图到眼前！";
         }
 
-        async function loadResources() {
+        function createDebugContent() {
+            groupContainer = new THREE.Group();
+            groupContainer.position.set(0, 1.5, -0.5); // 默认放在前方
+            groupContainer.scale.set(0.002, 0.002, 0.002);
+            scene.add(groupContainer);
+
+            // 这是一个红色的旋转方块，用来证明程序没死
+            const geo = new THREE.BoxGeometry(100, 100, 100);
+            const mat = new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true });
+            debugBox = new THREE.Mesh(geo, mat);
+            debugBox.position.x = 200; // 放在画的右边
+            groupContainer.add(debugBox);
+        }
+
+        // --- 安全加载资源 (即使404也能跑) ---
+        async function loadResourcesSafe() {
             const loader = new THREE.TextureLoader();
             loader.setCrossOrigin('anonymous');
+
+            // 辅助函数：尝试加载，失败则返回一个纯色纹理
+            const safeLoad = (url, fallbackColor) => {
+                return new Promise(resolve => {
+                    loader.load(
+                        url, 
+                        (tex) => {
+                            tex.colorSpace = THREE.SRGBColorSpace;
+                            resolve(tex);
+                        },
+                        undefined, 
+                        (err) => {
+                            console.warn(`图片 ${url} 加载失败，使用备用色块`);
+                            statusText.innerText = "图片加载失败，已使用备用色块";
+                            resolve(createPlaceholderTexture(fallbackColor));
+                        }
+                    );
+                });
+            };
+
+            const texRen = await safeLoad(CONFIG.renImage, '#333333'); // 失败变深灰
+            const texYi = await safeLoad(CONFIG.yiImage, '#00ff88');   // 失败变亮绿
+
+            createHologram(texRen, texYi);
+        }
+
+        // 创建备用的纯色图片
+        function createPlaceholderTexture(colorStr) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64; canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = colorStr;
+            ctx.fillRect(0,0,64,64);
+            // 画个 X
+            ctx.strokeStyle = 'white';
+            ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(64,64); ctx.moveTo(64,0); ctx.lineTo(0,64); ctx.stroke();
             
-            const loadTexture = (url) => new Promise((resolve, reject) => {
-                loader.load(url, (tex) => {
-                    tex.colorSpace = THREE.SRGBColorSpace;
-                    resolve(tex);
-                }, undefined, (err) => reject(err)); // 添加错误捕获
-            });
-
-            try {
-                const [texRen, texYi] = await Promise.all([
-                    loadTexture(CONFIG.renImage),
-                    loadTexture(CONFIG.yiImage)
-                ]);
-
-                createHologram(texRen, texYi);
-                statusText.innerHTML = "加载完毕。请点击底部 <span class='highlight'>AR 按钮</span>";
-
-            } catch (err) {
-                statusText.innerText = "资源加载失败 (请检查图片链接是否过期)";
-                console.error("Error loading textures:", err);
-            }
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            return tex;
         }
 
         function createHologram(texRen, texYi) {
-            groupContainer = new THREE.Group();
-            
-            // 初始位置 (网页预览用)
-            groupContainer.position.set(0, 1.5, -1); 
-            groupContainer.scale.set(0.0025, 0.0025, 0.0025); 
-            scene.add(groupContainer);
+            // 移除旧的（如果有）
+            const oldMesh = groupContainer.getObjectByName("mainMesh");
+            if(oldMesh) groupContainer.remove(oldMesh);
+            const oldParticles = groupContainer.getObjectByName("particles");
+            if(oldParticles) groupContainer.remove(oldParticles);
 
             const aspect = texYi.image.width / texYi.image.height;
-            const displayHeight = 250; 
-            const displayWidth = displayHeight * aspect;
+            const h = 250; 
+            const w = h * aspect;
 
-            // 1. 背景层
-            const geometryRen = new THREE.PlaneGeometry(displayWidth, displayHeight);
-            const materialRen = new THREE.MeshBasicMaterial({ 
-                map: texRen,
-                transparent: true,
-                opacity: 0.6, 
-                side: THREE.DoubleSide
-            });
-            renMesh = new THREE.Mesh(geometryRen, materialRen);
-            renMesh.position.z = -2; //稍微靠后一点
-            groupContainer.add(renMesh);
+            // 1. 背景
+            const geoRen = new THREE.PlaneGeometry(w, h);
+            const matRen = new THREE.MeshBasicMaterial({ map: texRen, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+            const meshRen = new THREE.Mesh(geoRen, matRen);
+            meshRen.name = "mainMesh";
+            meshRen.position.z = -5;
+            groupContainer.add(meshRen);
 
-            // 2. 粒子层
+            // 2. 粒子
             const imgData = getImageData(texYi.image);
-            const { positions, colors, randoms } = generateParticles(imgData, displayWidth, displayHeight);
+            const { p, c, r } = generateParticles(imgData, w, h);
+            
+            const geoYi = new THREE.BufferGeometry();
+            geoYi.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+            geoYi.setAttribute('color', new THREE.Float32BufferAttribute(c, 3));
+            geoYi.setAttribute('aRandom', new THREE.Float32BufferAttribute(r, 3));
 
-            const geometryYi = new THREE.BufferGeometry();
-            geometryYi.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-            geometryYi.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-            geometryYi.setAttribute('aRandom', new THREE.Float32BufferAttribute(randoms, 3));
-
-            const materialYi = new THREE.ShaderMaterial({
-                uniforms: {
-                    uProgress: { value: 0.0 },
-                    uSize: { value: CONFIG.particleSize }
-                },
+            const matYi = new THREE.ShaderMaterial({
+                uniforms: { uProgress: { value: 0.0 }, uSize: { value: CONFIG.particleSize } },
                 vertexShader: `
-                    uniform float uProgress;
-                    uniform float uSize;
-                    attribute vec3 color;
-                    attribute vec3 aRandom;
-                    varying vec3 vColor;
-                    varying float vAlpha;
+                    uniform float uProgress; uniform float uSize;
+                    attribute vec3 color; attribute vec3 aRandom;
+                    varying vec3 vColor; varying float vAlpha;
                     void main() {
-                        vColor = color;
-                        vec3 pos = position;
-                        
-                        // 3D 炸裂逻辑
-                        float explosion = uProgress * 100.0; 
-                        pos.x += aRandom.x * explosion;
-                        pos.y += aRandom.y * explosion + (uProgress * 30.0); // 加一点向上漂浮
-                        pos.z += aRandom.z * explosion * 3.0; 
-
-                        vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-                        gl_Position = projectionMatrix * mvPosition;
-                        
-                        // 距离衰减
-                        gl_PointSize = uSize * (40.0 / -mvPosition.z) * (1.0 - uProgress * 0.5);
+                        vColor = color; vec3 pos = position;
+                        float d = uProgress * 150.0;
+                        pos += aRandom * d; 
+                        vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+                        gl_Position = projectionMatrix * mv;
+                        gl_PointSize = uSize * (50.0 / -mv.z) * (1.0 - uProgress);
                         vAlpha = 1.0 - uProgress;
                     }
                 `,
                 fragmentShader: `
-                    varying vec3 vColor;
-                    varying float vAlpha;
+                    varying vec3 vColor; varying float vAlpha;
                     void main() {
-                        if (vAlpha <= 0.05) discard;
-                        vec2 uv = gl_PointCoord.xy - 0.5;
-                        if (length(uv) > 0.5) discard;
+                        if (vAlpha < 0.05) discard;
                         gl_FragColor = vec4(vColor, vAlpha);
                     }
                 `,
-                transparent: true,
-                depthWrite: false,
-                // 【修改点 3】关键！将 AdditiveBlending 改为 NormalBlending
-                // AdditiveBlending (发光叠加) 会导致密集粒子过曝变白。
-                // NormalBlending (正常混合) 可以保留原本颜色。
-                blending: THREE.NormalBlending 
+                transparent: true, depthWrite: false, blending: THREE.NormalBlending
             });
 
-            yiParticles = new THREE.Points(geometryYi, materialYi);
+            yiParticles = new THREE.Points(geoYi, matYi);
+            yiParticles.name = "particles";
             groupContainer.add(yiParticles);
+            
+            statusText.innerText = "全息图已生成！如果在身后请扣扳机。";
         }
 
-        // --- VR 手势判定 ---
-        function detectHandPose() {
-            // 简单的逻辑：只要有一只手张开就算张开
-            let rightOpen = false;
-            let leftOpen = false;
-            if (handRight && handRight.joints) rightOpen = checkHand(handRight);
-            if (handLeft && handLeft.joints) leftOpen = checkHand(handLeft);
-            
-            isHandOpen = rightOpen || leftOpen;
+        // --- 手势与渲染 ---
+        function setupHands() {
+            handRight = renderer.xr.getHand(0); scene.add(handRight);
+            handLeft = renderer.xr.getHand(1); scene.add(handLeft);
         }
 
         function checkHand(hand) {
-            const wrist = hand.joints['wrist'];
-            const indexTip = hand.joints['index-finger-tip'];
-            
-            if (!wrist || !indexTip) return false;
-
-            const distIndex = wrist.position.distanceTo(indexTip.position);
-            
-            // 阈值调整
-            const thresholdOpen = 0.13; // 大于此值认为张开
-            const thresholdClose = 0.08; // 小于此值认为握拳
-
-            if (distIndex > thresholdOpen) return true;
-            if (distIndex < thresholdClose) return false;
-            return isHandOpen; // 在中间区域保持上一个状态（防抖）
+            if(!hand || !hand.joints || !hand.joints['wrist']) return false;
+            const d = hand.joints['wrist'].position.distanceTo(hand.joints['index-finger-tip'].position);
+            if(d > 0.12) isHandOpen = true;
+            else if(d < 0.08) isHandOpen = false;
         }
 
         function render() {
-            // 1. 检测手势
-            detectHandPose();
+            if(debugBox) debugBox.rotation.y += 0.05; // 红盒子自转证明还没死机
+            
+            if(handRight) checkHand(handRight);
+            if(handLeft) checkHand(handLeft);
 
-            // 2. 更新动画状态
-            if (isHandOpen) {
-                dissolveProgress += CONFIG.dissolveSpeed;
-                if(statusText && renderer.xr.isPresenting) statusText.innerText = "状态: 张开 (消散)";
-            } else {
-                dissolveProgress -= CONFIG.recoverSpeed;
-                if(statusText && renderer.xr.isPresenting) statusText.innerText = "状态: 握拳 (聚合)";
-            }
+            if(isHandOpen) dissolveProgress += CONFIG.dissolveSpeed;
+            else dissolveProgress -= CONFIG.recoverSpeed;
             dissolveProgress = Math.max(0, Math.min(1, dissolveProgress));
 
-            // 3. 更新粒子 Shader
-            if (yiParticles) {
+            if(yiParticles) {
                 yiParticles.material.uniforms.uProgress.value = dissolveProgress;
-                // 缓慢自转
-                if (groupContainer) groupContainer.rotation.y += 0.001;
             }
 
             renderer.render(scene, camera);
         }
 
-        // --- 辅助函数 ---
-        function getImageData(image) {
-            const c = document.createElement('canvas');
-            c.width = image.width; c.height = image.height;
-            const ctx = c.getContext('2d');
-            ctx.drawImage(image, 0, 0);
-            return ctx.getImageData(0, 0, image.width, image.height);
+        // --- 工具 ---
+        function getImageData(img) {
+            const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+            const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
+            return ctx.getImageData(0, 0, img.width, img.height);
         }
-
-        function generateParticles(imgData, w, h) {
-            const pos = [], col = [], rnd = [];
-            const step = CONFIG.threshold;
-            for(let y=0; y<imgData.height; y+=step){
-                for(let x=0; x<imgData.width; x+=step){
-                    const i = (y*imgData.width+x)*4;
-                    const alpha = imgData.data[i+3];
-                    // 只选取不透明的像素
-                    if(alpha > 50){
-                        pos.push((x/imgData.width-0.5)*w, -(y/imgData.height-0.5)*h, 0);
-                        col.push(imgData.data[i]/255, imgData.data[i+1]/255, imgData.data[i+2]/255);
-                        rnd.push((Math.random()-0.5)*2, (Math.random()-0.5)*2, Math.random()*1.5);
-                    }
+        function generateParticles(data, w, h) {
+            const p=[], c=[], r=[]; const s=CONFIG.threshold;
+            for(let y=0; y<data.height; y+=s) for(let x=0; x<data.width; x+=s) {
+                const i=(y*data.width+x)*4;
+                if(data.data[i+3]>50) {
+                    p.push((x/data.width-0.5)*w, -(y/data.height-0.5)*h, 0);
+                    c.push(data.data[i]/255, data.data[i+1]/255, data.data[i+2]/255);
+                    r.push((Math.random()-.5)*2, (Math.random()-.5)*2, Math.random());
                 }
             }
-            return { positions: new Float32Array(pos), colors: new Float32Array(col), randoms: new Float32Array(rnd) };
+            return { p: new Float32Array(p), c: new Float32Array(c), r: new Float32Array(r) };
         }
-
         function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
+            camera.aspect = window.innerWidth/window.innerHeight;
+            camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
         }
     </script>
 </body>
