@@ -3,25 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Quest 3 MR - 粒子消散</title>
+    <title>Quest 3 透视粒子 (修复版)</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; font-family: sans-serif; }
-        #info {
-            position: absolute;
-            top: 20px; width: 100%;
-            text-align: center; color: white;
-            pointer-events: none; z-index: 100;
-            text-shadow: 0 0 5px #000;
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #111; /* 网页预览时是黑的，进AR后会消失 */
+            font-family: sans-serif;
         }
-        .highlight { color: #00ff88; font-weight: bold; }
+        #info {
+            position: absolute; 
+            top: 20px; 
+            width: 100%; 
+            text-align: center; 
+            color: #ccc; 
+            pointer-events: none;
+            z-index: 10;
+        }
     </style>
 </head>
 <body>
 
-    <div id="info">
-        Quest 3 MR 模式<br>
-        <span id="status">初始化中...</span>
-    </div>
+    <div id="info">AR 粒子修复版 - 请点击底部 AR 按钮</div>
 
     <script type="importmap">
         {
@@ -34,152 +37,138 @@
 
     <script type="module">
         import * as THREE from 'three';
-        import { VRButton } from 'three/addons/webxr/VRButton.js';
-        import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
-        import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
+        // 关键修改：引入 ARButton 而不是 VRButton
+        import { ARButton } from 'three/addons/webxr/ARButton.js';
 
-        // --- 配置 ---
+        // --- ⚙️ 配置 ---
         const CONFIG = {
-            renImage: 'https://files.catbox.moe/mug12k.png',
-            yiImage: 'https://files.catbox.moe/lwiorc.png',
-            particleSize: 4.0,   // VR里像素密度高，粒子要大一点
-            threshold: 3,        // 采样密度
-            dissolveSpeed: 0.03,
-            recoverSpeed: 0.05
+            // 背景图
+            renImage: 'https://picsum.photos/id/237/400/600', 
+            // 粒子图
+            yiImage: 'https://picsum.photos/id/104/400/600',   
+            
+            // 关键调整：VR里 2.5 左右比较清晰，太大容易糊
+            particleSize: 2.5,   
+            threshold: 4,        
+            dissolveSpeed: 0.04, 
+            recoverSpeed: 0.06   
         };
 
         let scene, camera, renderer;
-        let yiParticles, renMesh, groupContainer;
+        let yiParticles, hologramGroup;
         let handRight, handLeft;
         let dissolveProgress = 0;
         let isHandOpen = false;
-        
-        const statusText = document.getElementById('status');
 
         init();
-        animate();
 
         function init() {
-            // 1. 场景设置
+            // 1. 场景
             scene = new THREE.Scene();
-            // 注意：不设置 scene.background，这样才能看到透视背景！
+            // ⚠️ 绝对不要设置 scene.background，否则会遮挡透视摄像头！
             
             camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
-            camera.position.set(0, 1.6, 3); // PC调试位置
+            camera.position.set(0, 1.6, 2);
 
-            // 2. 渲染器设置 (关键：alpha: true)
+            // 2. 渲染器
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.xr.enabled = true; // 开启 XR
+            renderer.xr.enabled = true;
             document.body.appendChild(renderer.domElement);
 
-            // 3. 添加 AR 按钮
-            // 'immersive-ar' 是透视模式的关键
-            // 'hand-tracking' 请求手势数据
-            const sessionInit = { 
+            // 3. 关键修改：使用 ARButton 开启透视模式
+            // sessionInit 必须请求 'immersive-ar'
+            const button = ARButton.createButton(renderer, { 
                 requiredFeatures: ['hit-test'], 
-                optionalFeatures: ['hand-tracking'] 
-            };
-            const button = VRButton.createButton(renderer, { 
-                sessionInit: { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking', 'layers'], requiredFeatures: ['hit-test'] } 
+                optionalFeatures: ['dom-overlay', 'hand-tracking'], // 请求手势追踪
+                domOverlay: { root: document.body } 
             });
-            // 强制修改按钮文字为 AR (默认是 VR)
-            button.textContent = 'ENTER AR (透视模式)';
             document.body.appendChild(button);
-            
-            // 监听进入会话，调整背景色
-            renderer.xr.addEventListener('sessionstart', () => {
-                statusText.innerText = "请把手伸到画面附近张开";
-            });
 
-            // 4. 设置手势追踪
+            // 4. 手势追踪
             setupHands();
 
-            // 5. 加载资源并创建全息投影
+            // 5. 监听 AR 启动
+            renderer.xr.addEventListener('sessionstart', () => {
+                // AR 启动后，把全息图放到面前 0.5 米
+                if(hologramGroup) {
+                    hologramGroup.position.set(0, 1.3, -0.5);
+                    hologramGroup.scale.set(0.0015, 0.0015, 0.0015);
+                }
+            });
+
+            // 6. 加载资源
             loadResources();
 
-            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+            
+            renderer.setAnimationLoop(render);
         }
 
         function setupHands() {
-            // 获取右手 (Index: 0 通常是右手，但最好两个都监听)
-            handRight = renderer.xr.getHand(0); 
+            handRight = renderer.xr.getHand(0);
             scene.add(handRight);
-
             handLeft = renderer.xr.getHand(1);
             scene.add(handLeft);
-
-            // 可选：添加手部模型网格，方便你看清系统识别到的手在哪里
-            const handModelFactory = new XRHandModelFactory();
-            
-            // 只有在你调试想看“幽灵手”的时候才取消注释下面这行
-            // handRight.add(handModelFactory.createHandModel(handRight, 'mesh'));
-            // handLeft.add(handModelFactory.createHandModel(handLeft, 'mesh'));
         }
 
         async function loadResources() {
             const loader = new THREE.TextureLoader();
             loader.setCrossOrigin('anonymous');
             
-            const loadTexture = (url) => new Promise(resolve => {
-                loader.load(url, (tex) => {
-                    tex.colorSpace = THREE.SRGBColorSpace;
-                    resolve(tex);
-                });
-            });
+            const load = url => new Promise(resolve => loader.load(url, tex => {
+                tex.colorSpace = THREE.SRGBColorSpace;
+                resolve(tex);
+            }));
 
             try {
-                const [texRen, texYi] = await Promise.all([
-                    loadTexture(CONFIG.renImage),
-                    loadTexture(CONFIG.yiImage)
-                ]);
-
+                const [texRen, texYi] = await Promise.all([load(CONFIG.renImage), load(CONFIG.yiImage)]);
                 createHologram(texRen, texYi);
-                statusText.innerHTML = "资源加载完毕，请点击底部按钮进入 <span class='highlight'>AR 模式</span>";
-
-            } catch (err) {
-                statusText.innerText = "资源加载失败";
-                console.error(err);
+            } catch (e) {
+                console.error("图片加载失败", e);
             }
         }
 
         function createHologram(texRen, texYi) {
-            groupContainer = new THREE.Group();
+            hologramGroup = new THREE.Group();
+            scene.add(hologramGroup);
             
-            // 设置全息图在 VR 空间的位置
-            // (0, 1.3, -0.8) 意味着：正前方 0.8米，高度 1.3米 (大概胸口高度)
-            groupContainer.position.set(0, 1.3, -0.8); 
-            // 稍微缩小一点适应 VR 视野
-            groupContainer.scale.set(0.003, 0.003, 0.003); 
-            scene.add(groupContainer);
+            // 默认预览位置
+            hologramGroup.position.set(0, 1.5, -1);
+            hologramGroup.scale.set(0.002, 0.002, 0.002);
 
             const aspect = texYi.image.width / texYi.image.height;
-            const displayHeight = 200; 
-            const displayWidth = displayHeight * aspect;
+            const w = 300 * aspect;
+            const h = 300;
 
-            // 1. 背景层 (Ren) - 设为半透明，增强全息感
-            const geometryRen = new THREE.PlaneGeometry(displayWidth, displayHeight);
-            const materialRen = new THREE.MeshBasicMaterial({ 
-                map: texRen,
-                transparent: true,
-                opacity: 0.5, // 半透明，让真实世界透过来一点
-                side: THREE.DoubleSide
-            });
-            renMesh = new THREE.Mesh(geometryRen, materialRen);
-            renMesh.position.z = -1;
-            groupContainer.add(renMesh);
+            // 背景板
+            const plane = new THREE.Mesh(
+                new THREE.PlaneGeometry(w, h),
+                new THREE.MeshBasicMaterial({ 
+                    map: texRen, 
+                    transparent: true, 
+                    opacity: 0.4, // 半透明背景
+                    side: THREE.DoubleSide 
+                })
+            );
+            plane.position.z = -2;
+            hologramGroup.add(plane);
 
-            // 2. 粒子层 (Yi)
+            // 粒子系统
             const imgData = getImageData(texYi.image);
-            const { positions, colors, randoms } = generateParticles(imgData, displayWidth, displayHeight);
+            const { pos, col, rnd } = generateParticles(imgData, w, h);
 
-            const geometryYi = new THREE.BufferGeometry();
-            geometryYi.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-            geometryYi.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-            geometryYi.setAttribute('aRandom', new THREE.Float32BufferAttribute(randoms, 3));
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+            geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+            geo.setAttribute('aRandom', new THREE.Float32BufferAttribute(rnd, 3));
 
-            const materialYi = new THREE.ShaderMaterial({
+            const mat = new THREE.ShaderMaterial({
                 uniforms: {
                     uProgress: { value: 0.0 },
                     uSize: { value: CONFIG.particleSize }
@@ -193,19 +182,19 @@
                     varying float vAlpha;
                     void main() {
                         vColor = color;
-                        vec3 pos = position;
+                        vec3 p = position;
                         
-                        // 3D 炸裂逻辑
-                        float explosion = uProgress * 80.0; // VR里范围可以大一点
-                        pos.x += aRandom.x * explosion;
-                        pos.y += aRandom.y * explosion;
-                        pos.z += aRandom.z * explosion * 2.0; // 向 Z 轴突起
+                        // 炸裂效果
+                        float dist = uProgress * 200.0;
+                        p.x += aRandom.x * dist;
+                        p.y += aRandom.y * dist + uProgress * 50.0;
+                        p.z += aRandom.z * dist * 3.0;
 
-                        vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                        vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
                         gl_Position = projectionMatrix * mvPosition;
                         
-                        // 距离衰减让粒子远了变小
-                        gl_PointSize = uSize * (30.0 / -mvPosition.z) * (1.0 - uProgress * 0.5);
+                        // 粒子大小随距离衰减
+                        gl_PointSize = uSize * (300.0 / -mvPosition.z) * (1.0 - uProgress * 0.5);
                         vAlpha = 1.0 - uProgress;
                     }
                 `,
@@ -213,7 +202,7 @@
                     varying vec3 vColor;
                     varying float vAlpha;
                     void main() {
-                        if (vAlpha <= 0.01) discard;
+                        if (vAlpha < 0.05) discard;
                         vec2 uv = gl_PointCoord.xy - 0.5;
                         if (length(uv) > 0.5) discard;
                         gl_FragColor = vec4(vColor, vAlpha);
@@ -221,118 +210,62 @@
                 `,
                 transparent: true,
                 depthWrite: false,
-                blending: THREE.AdditiveBlending // 发光混合模式，更像全息
+                // 关键修复：改为 NormalBlending，防止变白！
+                blending: THREE.NormalBlending 
             });
 
-            yiParticles = new THREE.Points(geometryYi, materialYi);
-            groupContainer.add(yiParticles);
+            yiParticles = new THREE.Points(geo, mat);
+            hologramGroup.add(yiParticles);
         }
 
-        // --- 核心：VR 手势判定 ---
-        function detectHandPose() {
-            // 检查右手
-            if (handRight && handRight.joints) {
-                checkHand(handRight);
-            }
-            // 检查左手
-            if (handLeft && handLeft.joints) {
-                checkHand(handLeft);
-            }
-        }
-
+        // --- 手势与动画 ---
         function checkHand(hand) {
-            // WebXR 的关节名称
-            const wrist = hand.joints['wrist'];
-            const indexTip = hand.joints['index-finger-tip'];
-            const middleTip = hand.joints['middle-finger-tip'];
+            if (!hand || !hand.joints || !hand.joints['wrist']) return false;
+            const dist = hand.joints['wrist'].position.distanceTo(hand.joints['index-finger-tip'].position);
             
-            // 必须检测到关节数据
-            if (!wrist || !indexTip) return;
-
-            // 获取世界坐标
-            const pWrist = wrist.position;
-            const pIndex = indexTip.position;
-            const pMiddle = middleTip.position;
-
-            // 逻辑1：计算指尖到手腕的距离
-            // 手掌张开时，指尖离手腕远；握拳时，指尖离手腕近
-            const distIndex = pWrist.distanceTo(pIndex);
-            
-            // VR里的单位是米。
-            // 经验值：成年人手张开，中指尖到手腕大约 0.15m - 0.2m
-            // 握拳时，大约 < 0.1m
-            
-            const threshold = 0.12; // 12厘米阈值
-
-            // 简单的防抖动
-            if (distIndex > threshold) {
-                isHandOpen = true;
-            } else if (distIndex < threshold - 0.02) {
-                isHandOpen = false;
-            }
-
-            // 逻辑2 (可选)：让全息图稍微看向手的位置 (注视效果)
-            // groupContainer.lookAt(pWrist);
-        }
-
-        function animate() {
-            // 必须使用 setAnimationLoop 而不是 requestAnimationFrame
-            renderer.setAnimationLoop(render);
+            // 阈值判定
+            if (dist > 0.12) isHandOpen = true;
+            else if (dist < 0.08) isHandOpen = false;
         }
 
         function render() {
-            // 1. 检测手势
-            detectHandPose();
+            if (handRight) checkHand(handRight);
+            if (handLeft) checkHand(handLeft);
 
-            // 2. 更新动画状态
-            if (isHandOpen) {
-                dissolveProgress += CONFIG.dissolveSpeed;
-                if(statusText) statusText.innerText = "状态: 张开 (消散)";
-            } else {
-                dissolveProgress -= CONFIG.recoverSpeed;
-                if(statusText) statusText.innerText = "状态: 握拳 (聚合)";
-            }
+            if (isHandOpen) dissolveProgress += CONFIG.dissolveSpeed;
+            else dissolveProgress -= CONFIG.recoverSpeed;
             dissolveProgress = Math.max(0, Math.min(1, dissolveProgress));
 
-            // 3. 更新粒子 Shader
             if (yiParticles) {
                 yiParticles.material.uniforms.uProgress.value = dissolveProgress;
-                // 让粒子缓慢自转，增加全息感
-                yiParticles.rotation.y += 0.002;
+                hologramGroup.rotation.y = Math.sin(Date.now() * 0.0005) * 0.15; // 缓慢自转
             }
 
             renderer.render(scene, camera);
         }
 
-        // --- 辅助函数 (保持不变) ---
-        function getImageData(image) {
+        // --- 工具 ---
+        function getImageData(img) {
             const c = document.createElement('canvas');
-            c.width = image.width; c.height = image.height;
+            c.width = img.width; c.height = img.height;
             const ctx = c.getContext('2d');
-            ctx.drawImage(image, 0, 0);
-            return ctx.getImageData(0, 0, image.width, image.height);
+            ctx.drawImage(img, 0, 0);
+            return ctx.getImageData(0, 0, img.width, img.height);
         }
 
-        function generateParticles(imgData, w, h) {
+        function generateParticles(data, w, h) {
             const pos = [], col = [], rnd = [];
-            const step = CONFIG.threshold;
-            for(let y=0; y<imgData.height; y+=step){
-                for(let x=0; x<imgData.width; x+=step){
-                    const i = (y*imgData.width+x)*4;
-                    if(imgData.data[i+3]>128){
-                        pos.push((x/imgData.width-0.5)*w, -(y/imgData.height-0.5)*h, 0);
-                        col.push(imgData.data[i]/255, imgData.data[i+1]/255, imgData.data[i+2]/255);
-                        rnd.push(Math.random()-0.5, Math.random()-0.5, Math.random());
+            for (let y = 0; y < data.height; y += CONFIG.threshold) {
+                for (let x = 0; x < data.width; x += CONFIG.threshold) {
+                    const i = (y * data.width + x) * 4;
+                    if (data.data[i + 3] > 50) {
+                        pos.push((x / data.width - 0.5) * w, -(y / data.height - 0.5) * h, 0);
+                        col.push(data.data[i] / 255, data.data[i+1] / 255, data.data[i+2] / 255);
+                        rnd.push((Math.random()-0.5)*2, (Math.random()-0.5)*2, Math.random());
                     }
                 }
             }
-            return { positions: new Float32Array(pos), colors: new Float32Array(col), randoms: new Float32Array(rnd) };
-        }
-
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
+            return { pos: new Float32Array(pos), col: new Float32Array(col), rnd: new Float32Array(rnd) };
         }
     </script>
 </body>
